@@ -75,10 +75,10 @@ def app():
         valor_prod = st.number_input("Valor Producción", min_value=0.0, step=100.0)
         valor_venta = st.number_input("Valor Venta", min_value=0.0, step=100.0)
         if st.button("Registrar"):
-            if codigo and descripcion:
+            if codigo and descripcion and isinstance(valor_prod, (int, float)) and isinstance(valor_venta, (int, float)):
                 agregar_actividad(codigo, descripcion, unidad, grupo, tipo, valor_prod, valor_venta)
             else:
-                st.warning("⚠️ Completa todos los campos obligatorios.")
+                st.warning("⚠️ Verifica que todos los campos estén completos y los valores numéricos sean correctos.")
 
     st.markdown("---")
     st.subheader("📄 Actividades registradas")

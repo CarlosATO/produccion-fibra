@@ -1,6 +1,6 @@
-
 import streamlit as st
 import sqlite3
+import re
 
 def conectar():
     return sqlite3.connect("productividad_fibra.db", check_same_thread=False)
@@ -28,7 +28,7 @@ def obtener_personal():
     conn.close()
     return datos
 
-def agregar_persona(nombre, rut, cargo, empresa):
+def agregar_personal(nombre, rut, cargo, empresa):
     conn = conectar()
     cursor = conn.cursor()
     cursor.execute("""
@@ -37,57 +37,67 @@ def agregar_persona(nombre, rut, cargo, empresa):
     """, (nombre, rut, cargo, empresa))
     conn.commit()
     conn.close()
-    st.success("✅ Personal registrado correctamente.")
+    st.success("✅ Personal registrado.")
 
-def actualizar_persona(idp, nombre, rut, cargo, empresa):
+def actualizar_personal(id_pers, nombre, rut, cargo, empresa):
     conn = conectar()
     cursor = conn.cursor()
     cursor.execute("""
         UPDATE personal
         SET nombre = ?, rut = ?, cargo = ?, empresa = ?
         WHERE id = ?
-    """, (nombre, rut, cargo, empresa, idp))
+    """, (nombre, rut, cargo, empresa, id_pers))
     conn.commit()
     conn.close()
-    st.success("✏️ Datos actualizados.")
+    st.success("✏️ Personal actualizado.")
 
-def eliminar_persona(idp):
+def eliminar_personal(id_pers):
     conn = conectar()
     cursor = conn.cursor()
-    cursor.execute("DELETE FROM personal WHERE id = ?", (idp,))
+    cursor.execute("DELETE FROM personal WHERE id = ?", (id_pers,))
     conn.commit()
     conn.close()
-    st.success("🗑️ Registro eliminado.")
+    st.success("🗑️ Personal eliminado.")
+
+def es_rut_valido(rut):
+    return bool(re.match(r"^\d{7,8}-[\dkK]$", rut.strip()))
 
 def app():
     st.subheader("👷 Mantenimiento de Personal")
     crear_tabla_personal()
 
-    with st.expander("➕ Agregar nuevo personal"):
-        nombre = st.text_input("Nombre completo")
-        rut = st.text_input("RUT")
+    with st.expander("➕ Agregar nuevo trabajador"):
+        nombre = st.text_input("Nombre")
+        rut = st.text_input("RUT (ej: 12345678-9)")
         cargo = st.text_input("Cargo")
         empresa = st.text_input("Empresa")
+
         if st.button("Registrar"):
-            if nombre and rut:
-                agregar_persona(nombre, rut, cargo, empresa)
+            if not nombre or not rut:
+                st.warning("⚠️ Nombre y RUT son obligatorios.")
+            elif not es_rut_valido(rut):
+                st.error("❌ El RUT debe tener el formato correcto, por ejemplo: 12345678-9")
             else:
-                st.warning("⚠️ Ingresa al menos nombre y RUT.")
+                agregar_personal(nombre, rut.upper().strip(), cargo, empresa)
 
     st.markdown("---")
     st.subheader("📋 Personal registrado")
 
     datos = obtener_personal()
-    for persona in datos:
-        with st.expander(f"🧾 {persona[1]}"):
-            nombre = st.text_input("Nombre", value=persona[1], key=f"n_{persona[0]}")
-            rut = st.text_input("RUT", value=persona[2], key=f"r_{persona[0]}")
-            cargo = st.text_input("Cargo", value=persona[3], key=f"c_{persona[0]}")
-            empresa = st.text_input("Empresa", value=persona[4], key=f"e_{persona[0]}")
+    for pers in datos:
+        with st.expander(f"🔧 {pers[1]} - {pers[2]}"):
+            nombre = st.text_input("Nombre", value=pers[1], key=f"nom_{pers[0]}")
+            rut = st.text_input("RUT", value=pers[2], key=f"rut_{pers[0]}")
+            cargo = st.text_input("Cargo", value=pers[3], key=f"car_{pers[0]}")
+            empresa = st.text_input("Empresa", value=pers[4], key=f"emp_{pers[0]}")
+
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("Actualizar", key=f"act_{persona[0]}"):
-                    actualizar_persona(persona[0], nombre, rut, cargo, empresa)
+                if st.button("Actualizar", key=f"act_{pers[0]}"):
+                    if not es_rut_valido(rut):
+                        st.error("❌ Formato de RUT incorrecto. No se puede actualizar.")
+                    else:
+                        actualizar_personal(pers[0], nombre, rut.upper().strip(), cargo, empresa)
             with col2:
-                if st.button("Eliminar", key=f"del_{persona[0]}"):
-                    eliminar_persona(persona[0])
+                if st.button("Eliminar", key=f"del_{pers[0]}"):
+                    eliminar_personal(pers[0])

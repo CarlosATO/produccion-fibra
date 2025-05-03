@@ -40,7 +40,7 @@ def guardar_produccion(fecha, actividad, trabajador, triot, tramo, inicio, fin, 
     cursor = conn.cursor()
     cursor.execute("""
         INSERT INTO produccion (fecha, actividad, trabajador, triot, tramo, inicio, fin, mufa_origen, mufa_final, cantidad, rematado)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (fecha, actividad, trabajador, triot, tramo, inicio, fin, mufa_o, mufa_f, cantidad, rematado))
     conn.commit()
     conn.close()

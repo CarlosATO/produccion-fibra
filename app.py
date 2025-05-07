@@ -58,7 +58,10 @@ def mostrar_login():
 
 # Función para cargar secciones según opción
 def cargar_seccion(nombre):
-    if nombre == "Ingreso de Producción":
+    if nombre == "Resumen de Producción":
+        import resumen_produccion
+        resumen_produccion.app()
+    elif nombre == "Ingreso de Producción":
         import ingreso_produccion
         ingreso_produccion.app()
     elif nombre == "Mantenimiento de Actividades":
@@ -73,6 +76,15 @@ def cargar_seccion(nombre):
     elif nombre == "Mantenimiento de Usuarios":
         import mantenimiento_usuarios
         mantenimiento_usuarios.app()
+    elif nombre == "Mantenimiento de Empresas":
+        import mantenimiento_empresas
+        mantenimiento_empresas.app()
+    elif nombre == "Registro de Gastos":
+        import registro_gastos
+        registro_gastos.app()
+    elif nombre == "Creación de Estado de Pago":
+        import creacion_estado_pago
+        creacion_estado_pago.app()
 
 # App principal
 if "autenticado" not in st.session_state:
@@ -84,11 +96,15 @@ else:
     with st.sidebar:
         st.markdown(f"### 👋 Hola, {st.session_state['usuario'].capitalize()}")
         seccion = st.radio("Navegación", [
+            "Resumen de Producción",
             "Ingreso de Producción",
             "Mantenimiento de Actividades",
             "Mantenimiento de Personal",
             "Mantenimiento de Tramos",
-            "Mantenimiento de Usuarios"
+            "Mantenimiento de Usuarios",
+            "Mantenimiento de Empresas",
+            "Registro de Gastos",
+            "Creación de Estado de Pago"
         ])
         if st.button("Cerrar sesión"):
             st.session_state.clear()

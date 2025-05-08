@@ -1,129 +1,100 @@
 import streamlit as st
-import sqlite3
 import re
 import pandas as pd
+from config import supabase
 
-# --- Conexión a la base de datos ---
-def conectar():
-    return sqlite3.connect("productividad_fibra.db", check_same_thread=False)
+# --- Validación de RUT chileno ---
+def es_rut_valido(rut: str) -> bool:
+    rut_clean = rut.replace('.', '').replace('-', '').upper()
+    return bool(re.match(r"^\d{7,8}[0-9K]$", rut_clean))
 
-# --- Creación de tabla personal ---
-def crear_tabla_personal():
-    conn = conectar()
-    cursor = conn.cursor()
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS personal (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            nombre TEXT,
-            rut TEXT,
-            cargo TEXT,
-            empresa TEXT
-        )
-    """
+# --- Funciones de acceso a datos en Supabase ---
+
+def listar_empresas():
+    resp = (
+        supabase.table("empresas")
+        .select("nombre")
+        .order("nombre")
+        .execute()
     )
-    conn.commit()
-    conn.close()
+    return [r["nombre"] for r in resp.data]
 
-# --- Operaciones CRUD ---
-def obtener_personal():
-    conn = conectar()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM personal")
-    datos = cursor.fetchall()
-    conn.close()
-    return datos
 
-def agregar_personal(nombre, rut, cargo, empresa):
-    conn = conectar()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        INSERT INTO personal (nombre, rut, cargo, empresa)
-        VALUES (?, ?, ?, ?)
-        """,
-        (nombre, rut, cargo, empresa),
+def listar_personal():
+    """Devuelve lista de dicts con todo el personal."""
+    resp = (
+        supabase.table("personal")
+        .select("id, nombre, rut, cargo, empresa")
+        .order("nombre")
+        .execute()
     )
-    conn.commit()
-    conn.close()
+    return resp.data or []
+
+
+def agregar_personal(nombre: str, rut: str, cargo: str, empresa: str):
+    supabase.table("personal").insert({
+        "nombre": nombre.strip(),
+        "rut": rut.upper().strip(),
+        "cargo": cargo.strip(),
+        "empresa": empresa
+    }).execute()
     st.success("✅ Personal registrado.")
 
 
-def actualizar_personal(id_pers, nombre, rut, cargo, empresa):
-    conn = conectar()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        UPDATE personal
-        SET nombre = ?, rut = ?, cargo = ?, empresa = ?
-        WHERE id = ?
-        """,
-        (nombre, rut, cargo, empresa, id_pers),
-    )
-    conn.commit()
-    conn.close()
+def actualizar_personal(id_pers: int, nombre: str, rut: str, cargo: str, empresa: str):
+    supabase.table("personal").update({
+        "nombre": nombre.strip(),
+        "rut": rut.upper().strip(),
+        "cargo": cargo.strip(),
+        "empresa": empresa
+    }).eq("id", id_pers).execute()
     st.success("✏️ Personal actualizado.")
 
 
-def eliminar_personal(id_pers):
-    conn = conectar()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM personal WHERE id = ?", (id_pers,))
-    conn.commit()
-    conn.close()
+def eliminar_personal(id_pers: int):
+    supabase.table("personal").delete().eq("id", id_pers).execute()
     st.success("🗑️ Personal eliminado.")
-
-# --- Validación de RUT ---
-def es_rut_valido(rut):
-    return bool(re.match(r"^\d{7,8}-[\dkK]$", rut.strip()))
 
 # --- Interfaz de usuario ---
 def app():
     st.subheader("👷 Mantenimiento de Personal")
-    crear_tabla_personal()
 
-    # Cargar lista de empresas existentes
-    conn = conectar()
-    df_empresas = pd.read_sql_query(
-        "SELECT nombre FROM empresas ORDER BY nombre", conn
-    )
-    empresas = df_empresas["nombre"].tolist()
-    conn.close()
+    # Carga empresas
+    empresas = listar_empresas()
+    if not empresas:
+        st.warning("⚠️ Debes registrar empresas antes de ingresar personal.")
+        return
 
+    # Formulario de registro
     with st.expander("➕ Agregar nuevo trabajador"):
         nombre = st.text_input("Nombre", key="new_nombre")
         rut = st.text_input("RUT (ej: 12345678-9)", key="new_rut")
         cargo = st.text_input("Cargo", key="new_cargo")
-        empresa = st.selectbox("Empresa", empresas, key="new_empresa")
-
-        if st.button("Registrar"):
+        empresa_sel = st.selectbox("Empresa", empresas, key="new_empresa")
+        if st.button("Registrar", key="btn_reg_agregar"):
             if not nombre or not rut:
                 st.warning("⚠️ Nombre y RUT son obligatorios.")
             elif not es_rut_valido(rut):
-                st.error(
-                    "❌ El RUT debe tener el formato correcto, por ejemplo: 12345678-9"
-                )
+                st.error("❌ Formato de RUT incorrecto.")
             else:
-                agregar_personal(
-                    nombre.strip(), rut.upper().strip(), cargo.strip(), empresa
-                )
+                agregar_personal(nombre, rut, cargo, empresa_sel)
+                st.experimental_rerun()
 
     st.markdown("---")
     st.subheader("📋 Personal registrado")
 
-    datos = obtener_personal()
-    for pers in datos:
-        id_pers, nom, rut_val, car, emp = pers
-        with st.expander(f"🔧 {nom} - {rut_val}"):
-            nombre = st.text_input("Nombre", value=nom, key=f"nom_{id_pers}")
-            rut = st.text_input("RUT", value=rut_val, key=f"rut_{id_pers}")
-            cargo = st.text_input("Cargo", value=car, key=f"car_{id_pers}")
-            # seleccionar empresa existente
-            default_idx = empresas.index(emp) if emp in empresas else 0
+    personal = listar_personal()
+    for pers in personal:
+        id_pers = pers.get("id")
+        with st.expander(f"🔧 {pers.get('nombre')} - {pers.get('rut')}"):
+            nombre = st.text_input("Nombre", value=pers.get("nombre"), key=f"nom_{id_pers}")
+            rut = st.text_input("RUT", value=pers.get("rut"), key=f"rut_{id_pers}")
+            cargo = st.text_input("Cargo", value=pers.get("cargo"), key=f"car_{id_pers}")
             empresa_sel = st.selectbox(
                 "Empresa",
                 empresas,
-                index=default_idx,
-                key=f"emp_{id_pers}",
+                index=empresas.index(pers.get("empresa")) if pers.get("empresa") in empresas else 0,
+                key=f"emp_{id_pers}"
             )
 
             col1, col2 = st.columns(2)
@@ -132,16 +103,12 @@ def app():
                     if not es_rut_valido(rut):
                         st.error("❌ Formato de RUT incorrecto. No se puede actualizar.")
                     else:
-                        actualizar_personal(
-                            id_pers,
-                            nombre.strip(),
-                            rut.upper().strip(),
-                            cargo.strip(),
-                            empresa_sel,
-                        )
+                        actualizar_personal(id_pers, nombre, rut, cargo, empresa_sel)
+                        st.experimental_rerun()
             with col2:
                 if st.button("Eliminar", key=f"del_{id_pers}"):
                     eliminar_personal(id_pers)
+                    st.experimental_rerun()
 
 if __name__ == "__main__":
     app()

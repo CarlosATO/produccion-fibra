@@ -1,51 +1,67 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
+from config import supabase
 
-# --- Conexión a la base de datos ---
-def conectar():
-    return sqlite3.connect("productividad_fibra.db", check_same_thread=False)
+# --- Funciones de acceso a datos en Supabase ---
+
+def leer_produccion():
+    """Obtiene actividad y cantidad desde la tabla 'produccion'."""
+    resp = (
+        supabase
+        .table("produccion")
+        .select("actividad, cantidad")
+        .execute()
+    )
+    return pd.DataFrame(resp.data)
+
+
+def leer_actividades():
+    """Obtiene descripción y valores unitarios desde la tabla 'actividades'."""
+    resp = (
+        supabase
+        .table("actividades")
+        .select("descripcion, valor_produccion, valor_venta")
+        .execute()
+    )
+    return pd.DataFrame(resp.data)
 
 # --- Módulo de Resumen de Producción ---
+
 def app():
     st.subheader("📊 Resumen de Producción por Actividad")
-    
-    # Leer datos
-    conn = conectar()
-    df_prod = pd.read_sql("SELECT actividad, cantidad FROM produccion", conn)
-    df_act = pd.read_sql("SELECT descripcion, valor_produccion, valor_venta FROM actividades", conn)
-    conn.close()
+
+    # 1) Obtener datos
+    df_prod = leer_produccion()
+    df_act = leer_actividades()
 
     if df_prod.empty:
         st.info("No hay datos de producción registrados.")
         return
 
-    # Agrupar cantidades por actividad
+    # 2) Agrupar y sumar
     resumen = df_prod.groupby("actividad", as_index=False).sum()
 
-    # Unir con valores unitarios
+    # 3) Unir con valores unitarios
     resumen = resumen.merge(
         df_act,
         left_on="actividad", right_on="descripcion",
         how="left"
     )
 
-    # Calcular montos
+    # 4) Calcular montos
     resumen["Monto de Producción"] = resumen["cantidad"] * resumen["valor_produccion"]
     resumen["Monto de Venta"] = resumen["cantidad"] * resumen["valor_venta"]
 
-    # Armar tabla final
+    # 5) Preparar tabla final
     tabla = resumen[[
-        "actividad",
-        "cantidad",
-        "Monto de Producción",
-        "Monto de Venta"
+        "actividad", "cantidad",
+        "Monto de Producción", "Monto de Venta"
     ]].rename(columns={
         "actividad": "Actividad Realizada",
         "cantidad": "Realizado QTY"
     })
 
-    # Mostrar con formato
+    # 6) Mostrar con formato
     st.dataframe(
         tabla.style.format({
             "Realizado QTY": "{:.0f}",
@@ -54,3 +70,6 @@ def app():
         }),
         use_container_width=True
     )
+
+if __name__ == "__main__":
+    app()

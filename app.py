@@ -1,6 +1,11 @@
 import streamlit as st
 import sqlite3
 import hashlib
+from supabase import create_client, Client
+
+from config import supabase
+
+
 
 # Función para obtener conexión a la base de datos
 def get_connection():

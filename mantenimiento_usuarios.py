@@ -1,88 +1,91 @@
-
 import streamlit as st
-import sqlite3
 import hashlib
+from config import supabase
 
-# Conexión
-def conectar():
-    return sqlite3.connect("productividad_fibra.db", check_same_thread=False)
+# --- Funciones de acceso a datos en Supabase ---
 
-# Encriptar contraseña
-def encriptar_contrasena(contrasena):
+def listar_usuarios():
+    """Devuelve lista de dicts con id, nombre, usuario y rol."""
+    resp = (
+        supabase
+        .table("usuarios")
+        .select("id, nombre, usuario, rol")
+        .order("usuario")
+        .execute()
+    )
+    return resp.data or []
+
+
+def encriptar_contrasena(contrasena: str) -> str:
+    """Hash SHA-256 de contraseña"""
     return hashlib.sha256(contrasena.encode()).hexdigest()
 
-# Mostrar usuarios
-def mostrar_usuarios():
-    conn = conectar()
-    cursor = conn.cursor()
-    cursor.execute("SELECT id, usuario, rol FROM usuarios")
-    datos = cursor.fetchall()
-    conn.close()
-    return datos
 
-# Agregar usuario
-def agregar_usuario(usuario, contrasena, rol):
-    conn = conectar()
-    cursor = conn.cursor()
+def agregar_usuario(nombre: str, usuario: str, contrasena: str, rol: str):
+    """Inserta un nuevo usuario."""
     try:
-        cursor.execute("INSERT INTO usuarios (usuario, contrasena, rol) VALUES (?, ?, ?)",
-                       (usuario, encriptar_contrasena(contrasena), rol))
-        conn.commit()
+        supabase.table("usuarios").insert({
+            "nombre": nombre.strip(),
+            "usuario": usuario.strip(),
+            "password": encriptar_contrasena(contrasena),
+            "rol": rol
+        }).execute()
         st.success("✅ Usuario agregado correctamente.")
-    except sqlite3.IntegrityError:
-        st.error("❌ El usuario ya existe.")
-    conn.close()
+    except Exception as e:
+        st.error(f"❌ Error al agregar usuario: {e}")
 
-# Actualizar usuario
-def actualizar_usuario(id_usuario, nuevo_usuario, nueva_contrasena, nuevo_rol):
-    conn = conectar()
-    cursor = conn.cursor()
+
+def actualizar_usuario(id_usuario: int, nuevo_usuario: str, nueva_contrasena: str, nuevo_rol: str):
+    """Actualiza usuario y/o contraseña y rol."""
+    datos = {"usuario": nuevo_usuario.strip(), "rol": nuevo_rol}
     if nueva_contrasena:
-        cursor.execute("UPDATE usuarios SET usuario = ?, contrasena = ?, rol = ? WHERE id = ?",
-                       (nuevo_usuario, encriptar_contrasena(nueva_contrasena), nuevo_rol, id_usuario))
-    else:
-        cursor.execute("UPDATE usuarios SET usuario = ?, rol = ? WHERE id = ?",
-                       (nuevo_usuario, nuevo_rol, id_usuario))
-    conn.commit()
-    conn.close()
+        datos["password"] = encriptar_contrasena(nueva_contrasena)
+    supabase.table("usuarios").update(datos).eq("id", id_usuario).execute()
     st.success("✅ Usuario actualizado.")
 
-# Eliminar usuario
-def eliminar_usuario(id_usuario):
-    conn = conectar()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM usuarios WHERE id = ?", (id_usuario,))
-    conn.commit()
-    conn.close()
+
+def eliminar_usuario(id_usuario: int):
+    """Elimina usuario por ID."""
+    supabase.table("usuarios").delete().eq("id", id_usuario).execute()
     st.success("🗑️ Usuario eliminado.")
 
-# Interfaz principal
+# --- Interfaz de usuario ---
 def app():
     st.subheader("🔐 Mantenimiento de Usuarios")
 
+    # 1) Agregar nuevo usuario
     with st.expander("➕ Agregar nuevo usuario"):
-        nuevo_usuario = st.text_input("Usuario")
-        nueva_contrasena = st.text_input("Contraseña", type="password")
-        nuevo_rol = st.selectbox("Rol", ["admin", "editor", "visualizador"])
-        if st.button("Agregar usuario"):
-            if nuevo_usuario and nueva_contrasena:
-                agregar_usuario(nuevo_usuario, nueva_contrasena, nuevo_rol)
+        nombre = st.text_input("Nombre completo", key="new_nombre")
+        usuario = st.text_input("Usuario", key="new_usuario")
+        contrasena = st.text_input("Contraseña", type="password", key="new_password")
+        rol = st.selectbox("Rol", ["admin", "editor", "visualizador"], key="new_rol")
+        if st.button("Agregar usuario", key="btn_agregar_usuario"):
+            if not (nombre and usuario and contrasena):
+                st.warning("⚠️ Completa nombre, usuario y contraseña.")
             else:
-                st.warning("⚠️ Debes completar usuario y contraseña.")
+                agregar_usuario(nombre, usuario, contrasena, rol)
+                st.experimental_rerun()
 
     st.markdown("---")
     st.subheader("👥 Usuarios registrados")
 
-    usuarios = mostrar_usuarios()
-    for usuario in usuarios:
-        with st.expander(f"🔧 {usuario[1]}"):
-            nuevo_usuario = st.text_input("Usuario", value=usuario[1], key=f"usuario_{usuario[0]}")
-            nueva_contrasena = st.text_input("Nueva contraseña (opcional)", type="password", key=f"pass_{usuario[0]}")
-            nuevo_rol = st.selectbox("Rol", ["admin", "editor", "visualizador"], index=["admin", "editor", "visualizador"].index(usuario[2]), key=f"rol_{usuario[0]}")
+    usuarios = listar_usuarios()
+    for u in usuarios:
+        uid = u.get("id")
+        with st.expander(f"{u.get('usuario')} ({u.get('rol')})"):
+            nombre = st.text_input("Nombre completo", value=u.get("nombre"), key=f"nom_{uid}")
+            usuario = st.text_input("Usuario", value=u.get("usuario"), key=f"usr_{uid}")
+            nueva_contrasena = st.text_input("Nueva contraseña (opcional)", type="password", key=f"pwd_{uid}")
+            rol = st.selectbox("Rol", ["admin", "editor", "visualizador"], index=["admin", "editor", "visualizador"].index(u.get("rol")), key=f"rol_{uid}")
             col1, col2 = st.columns(2)
             with col1:
-                if st.button("Actualizar", key=f"actualizar_{usuario[0]}"):
-                    actualizar_usuario(usuario[0], nuevo_usuario, nueva_contrasena, nuevo_rol)
+                if st.button("Actualizar", key=f"act_{uid}"):
+                    actualizar_usuario(uid, usuario, nueva_contrasena, rol)
+                    st.experimental_rerun()
             with col2:
-                if st.button("Eliminar", key=f"eliminar_{usuario[0]}"):
-                    eliminar_usuario(usuario[0])
+                if st.button("Eliminar", key=f"del_{uid}"):
+                    eliminar_usuario(uid)
+                    st.experimental_rerun()
+
+if __name__ == "__main__":
+    app()

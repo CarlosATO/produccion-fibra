@@ -1,12 +1,51 @@
 import streamlit as st
-import sqlite3
 import pandas as pd
 import datetime
 from fpdf import FPDF
+from config import supabase
 
-# --- Conexión a la base de datos ---
-def conectar():
-    return sqlite3.connect("productividad_fibra.db", check_same_thread=False)
+# --- Funciones de acceso a datos en Supabase ---
+def leer_empresas():
+    resp = supabase.table("empresas").select("nombre").order("nombre").execute()
+    return [r["nombre"] for r in resp.data]
+
+
+def leer_produccion(empresa_sel):
+    # Obtiene producción, personal y actividades
+    prod = pd.DataFrame(
+        supabase.table("produccion").select("id, fecha, actividad, cantidad, trabajador").execute().data
+    )
+    perso = pd.DataFrame(
+        supabase.table("personal").select("nombre, empresa").execute().data
+    )
+    acts = pd.DataFrame(
+        supabase.table("actividades").select("descripcion, valor_produccion, valor_venta").execute().data
+    )
+    # Merge para agregar valores
+    df = prod.merge(perso, left_on="trabajador", right_on="nombre")
+    df = df[df["empresa"] == empresa_sel]
+    df = df.merge(acts, left_on="actividad", right_on="descripcion")
+    # Excluir ya pagados
+    pagos = supabase.table("estados_pago_detalle").select("produccion_id").execute().data
+    pagados = {r["produccion_id"] for r in pagos}
+    df = df[~df["id"].isin(pagados)]
+    # Cálculo de montos
+    df["Monto Producción"] = df["cantidad"] * df["valor_produccion"]
+    df["Monto Venta"] = df["cantidad"] * df["valor_venta"]
+    return df
+
+
+def leer_gastos(empresa_sel):
+    g = pd.DataFrame(
+        supabase.table("gastos").select("id, fecha, detalle, monto, empresa").execute().data
+    )
+    df_g = g[g["empresa"] == empresa_sel].copy()
+    usados = supabase.table("estados_pago_gastos").select("gasto_id").execute().data
+    usados_ids = {r["gasto_id"] for r in usados}
+    df_g = df_g[~df_g["id"].isin(usados_ids)]
+    df_g = df_g.rename(columns={"detalle": "descripcion"})
+    return df_g
+
 
 # --- Generación de PDF en memoria ---
 def generar_pdf_bytes(
@@ -85,7 +124,7 @@ def generar_pdf_bytes(
     pdf.cell(0, 6, f"$ {neto:,.0f}", ln=True)
     pdf.ln(10)
 
-    # Nota de Autorización al pie
+    # Pie de página de autorización
     pdf.set_draw_color(0, 0, 0)
     pdf.set_line_width(0.4)
     page_width = pdf.w - 2 * pdf.l_margin
@@ -109,96 +148,72 @@ def generar_pdf_bytes(
 
     return pdf.output(dest="S").encode("latin1")
 
+
+# --- Inserción de Estado de Pago en Supabase ---
+def insertar_estado_pago(nuevo_corr: str, empresa_sel: str,
+                          total_prod: float, total_venta: float,
+                          total_gastos: float, neto: float):
+    # Cabecera
+    supabase.table("estados_pago").insert({
+        "correlativo": nuevo_corr,
+        "fecha": datetime.date.today().isoformat(),
+        "empresa": empresa_sel,
+        "total_produccion": total_prod,
+        "total_venta": total_venta,
+        "total_gastos": total_gastos,
+        "neto": neto
+    }).execute()
+    # Detalle producción
+    supabase.table("estados_pago_detalle").insert([
+        {"correlativo": nuevo_corr, "produccion_id": i}
+        for i in st.session_state['seleccionadas']
+    ]).execute()
+    # Detalle gastos
+    supabase.table("estados_pago_gastos").insert([
+        {"correlativo": nuevo_corr, "gasto_id": i}
+        for i in st.session_state['gastos_seleccionadas']
+    ]).execute()
+
+
 # --- Función principal de Streamlit ---
 def app():
     st.subheader("🧾 Creación de Estado de Pago")
 
-    # BD y tablas
-    conn = conectar()
-    cur = conn.cursor()
-    cur.executescript("""
-        CREATE TABLE IF NOT EXISTS estados_pago (
-            correlativo TEXT PRIMARY KEY,
-            fecha TEXT,
-            empresa TEXT,
-            total_produccion REAL,
-            total_venta REAL,
-            total_gastos REAL,
-            neto REAL
-        );
-        CREATE TABLE IF NOT EXISTS estados_pago_detalle (
-            correlativo TEXT,
-            produccion_id INTEGER,
-            PRIMARY KEY(correlativo, produccion_id)
-        );
-        CREATE TABLE IF NOT EXISTS estados_pago_gastos (
-            correlativo TEXT,
-            gasto_id INTEGER,
-            PRIMARY KEY(correlativo, gasto_id)
-        );
-    """)
-    conn.commit()
-
-    # Subcontratos
-    df_emp = pd.read_sql_query("SELECT nombre FROM empresas ORDER BY nombre", conn)
-    empresas = df_emp["nombre"].tolist()
+    # 1) Lista de empresas
+    empresas = leer_empresas()
     if not empresas:
-        st.warning("⚠️ No hay empresas registradas.")
-        conn.close()
+        st.warning("⚠️ No hay empresas registradas en Supabase.")
         return
-    c1, c2, c3 = st.columns([1, 2, 1])
-    with c2:
-        empresa_sel = st.selectbox("Selecciona Subcontrato", empresas)
+    empresa_sel = st.selectbox("Selecciona Subcontrato", empresas)
 
-    # Datos filtrados
-    df = pd.read_sql_query("""
-        SELECT pr.id, pr.fecha, pr.actividad, pr.cantidad,
-               a.valor_produccion, a.valor_venta
-          FROM produccion pr
-          JOIN personal pe ON pr.trabajador = pe.nombre
-          JOIN actividades a ON pr.actividad = a.descripcion
-         WHERE pe.empresa = ?
-           AND pr.id NOT IN (SELECT produccion_id FROM estados_pago_detalle)
-    """, conn, params=(empresa_sel,))
-    df_g = pd.read_sql_query("""
-        SELECT id, fecha, detalle AS descripcion, monto
-          FROM gastos
-         WHERE empresa = ?
-           AND id NOT IN (SELECT gasto_id FROM estados_pago_gastos)
-    """, conn, params=(empresa_sel,))
-    if df.empty and df_g.empty:
+    # 2) Datos de producción y gastos
+    df_prod = leer_produccion(empresa_sel)
+    df_g = leer_gastos(empresa_sel)
+    if df_prod.empty and df_g.empty:
         st.info("No hay datos disponibles.")
-        conn.close()
         return
 
-    df["Monto Producción"] = df["cantidad"] * df["valor_produccion"]
-    df["Monto Venta"] = df["cantidad"] * df["valor_venta"]
+    # Cálculo montos y setup de session_state
+    total_prod = df_prod['Monto Producción'].sum()
+    total_venta = df_prod['Monto Venta'].sum()
+    total_gastos = df_g['monto'].sum()
+    neto = total_prod - total_gastos
 
-    # Reset session_state al cambiar subcontrato
-    if ('last_empresa' not in st.session_state or st.session_state['last_empresa'] != empresa_sel):
+    if ('disponibles' not in st.session_state
+            or st.session_state.get('last_empresa') != empresa_sel):
         st.session_state['last_empresa'] = empresa_sel
-        st.session_state['disponibles'] = df['id'].tolist()
+        st.session_state['disponibles'] = df_prod['id'].tolist()
         st.session_state['seleccionadas'] = []
         st.session_state['gastos_disponibles'] = df_g['id'].tolist()
         st.session_state['gastos_seleccionadas'] = []
 
-    # Formateo de opciones
-    row_map = {r['id']: r for _, r in df.iterrows()}
-    gas_map = {r['id']: r for _, r in df_g.iterrows()}
-    def fmt_line(i):
-        r = row_map[i]
-        return f"{r['fecha']} | {r['actividad']} | QTY:{int(r['cantidad'])} | Prod:${r['Monto Producción']:,.0f} | Venta:${r['Monto Venta']:,.0f}"
-    def fmt_gas(i):
-        g = gas_map[i]
-        return f"{g['fecha']} | {g['descripcion']} | Monto:${g['monto']:,.0f}"
-
-    # Dual-listbox de Producción
+    # 3) Dual-listbox Producción
+    row_map = {r['id']: r for _, r in df_prod.iterrows()}
     c1, c2 = st.columns(2)
     with c1:
         sel_disp = st.multiselect(
-            "Líneas disponibles",
-            st.session_state['disponibles'],
-            format_func=fmt_line,
+            "Líneas disponibles", st.session_state['disponibles'],
+            format_func=lambda i: f"{row_map[i]['fecha']} | {row_map[i]['actividad']} | QTY:{int(row_map[i]['cantidad'])} | Prod:${row_map[i]['Monto Producción']:,.0f} | Venta:${row_map[i]['Monto Venta']:,.0f}",
             key='d1'
         )
         if st.button('>> Añadir', key='a1'):
@@ -207,9 +222,8 @@ def app():
                 st.session_state['seleccionadas'].append(i)
     with c2:
         sel_sel = st.multiselect(
-            "Líneas seleccionadas",
-            st.session_state['seleccionadas'],
-            format_func=fmt_line,
+            "Líneas seleccionadas", st.session_state['seleccionadas'],
+            format_func=lambda i: f"{row_map[i]['fecha']} | {row_map[i]['actividad']} | QTY:{int(row_map[i]['cantidad'])} | Prod:${row_map[i]['Monto Producción']:,.0f} | Venta:${row_map[i]['Monto Venta']:,.0f}",
             key='s1'
         )
         if st.button('<< Quitar', key='q1'):
@@ -217,15 +231,15 @@ def app():
                 st.session_state['seleccionadas'].remove(i)
                 st.session_state['disponibles'].append(i)
 
-    # Dual-listbox de Gastos
+    # 4) Dual-listbox Gastos
     st.markdown("---")
     st.subheader("💸 Gastos a descontar")
+    row_g_map = {g['id']: g for _, g in df_g.iterrows()}
     c3, c4 = st.columns(2)
     with c3:
         sel_g_disp = st.multiselect(
-            "Gastos disponibles",
-            st.session_state['gastos_disponibles'],
-            format_func=fmt_gas,
+            "Gastos disponibles", st.session_state['gastos_disponibles'],
+            format_func=lambda i: f"{row_g_map[i]['fecha']} | {row_g_map[i]['descripcion']} | Monto:${row_g_map[i]['monto']:,.0f}",
             key='gd1'
         )
         if st.button('>> Añadir Gasto', key='ag1'):
@@ -234,9 +248,8 @@ def app():
                 st.session_state['gastos_seleccionadas'].append(i)
     with c4:
         sel_g_sel = st.multiselect(
-            "Gastos seleccionados",
-            st.session_state['gastos_seleccionadas'],
-            format_func=fmt_gas,
+            "Gastos seleccionados", st.session_state['gastos_seleccionadas'],
+            format_func=lambda i: f"{row_g_map[i]['fecha']} | {row_g_map[i]['descripcion']} | Monto:${row_g_map[i]['monto']:,.0f}",
             key='gs1'
         )
         if st.button('<< Quitar Gasto', key='qg1'):
@@ -244,14 +257,7 @@ def app():
                 st.session_state['gastos_seleccionadas'].remove(i)
                 st.session_state['gastos_disponibles'].append(i)
 
-    # Cálculo de totales
-    df_sel = df[df['id'].isin(st.session_state['seleccionadas'])]
-    df_g_sel = df_g[df_g['id'].isin(st.session_state['gastos_seleccionadas'])]
-    total_prod = df_sel['Monto Producción'].sum()
-    total_venta = df_sel['Monto Venta'].sum()
-    total_gastos = df_g_sel['monto'].sum()
-    neto = total_prod - total_gastos
-
+    # 5) Mostrar métricas y detalle Gastos
     st.markdown("---")
     col_tot, col_det = st.columns([1, 1])
     with col_tot:
@@ -261,28 +267,23 @@ def app():
         st.metric("Neto", f"$ {neto:,.0f}")
     with col_det:
         st.markdown("### Detalle Gastos")
-        detalle = df_g_sel[['fecha', 'descripcion', 'monto']].rename(
+        detalle = df_g[['fecha', 'descripcion', 'monto']].rename(
             columns={'fecha': 'Fecha', 'descripcion': 'Detalle', 'monto': 'Monto'}
         )
         st.dataframe(detalle, use_container_width=True, hide_index=True)
 
-    # Botón de Previsualizar PDF
+    # 6) Previsualizar PDF
     if st.button('📄 Previsualizar PDF', key='pv'):
-        cur.execute("SELECT correlativo FROM estados_pago ORDER BY correlativo DESC LIMIT 1")
-        fila = cur.fetchone()
-        num = int(fila[0].split('-')[1]) if fila else 0
-        temp_corr = f"EGTD-{(num+1):02d}"
+        # Obtener siguiente correlativo
+        corr_resp = supabase.table("estados_pago").select("correlativo").order("correlativo", desc=True).limit(1).execute().data
+        num = int(corr_resp[0]['correlativo'].split('-')[1]) if corr_resp else 0
+        temp_corr = f"EGTD-{num+1:02d}"
         hoy = datetime.date.today().isoformat()
         pdf_bytes = generar_pdf_bytes(
-            temp_corr,
-            empresa_sel,
-            hoy,
-            df_sel,
-            df_g_sel,
-            total_prod,
-            total_venta,
-            total_gastos,
-            neto
+            temp_corr, empresa_sel, hoy,
+            df_prod[df_prod['id'].isin(st.session_state['seleccionadas'])],
+            df_g[df_g['id'].isin(st.session_state['gastos_seleccionadas'])],
+            total_prod, total_venta, total_gastos, neto
         )
         st.download_button(
             label="Descargar Previsualización PDF",
@@ -291,33 +292,16 @@ def app():
             mime="application/pdf"
         )
 
-    # Botón de Guardar Estado de Pago
+    # 7) Guardar Estado de Pago
     if st.button('💾 Guardar Estado de Pago', key='sv'):
-        cur.execute("SELECT correlativo FROM estados_pago ORDER BY correlativo DESC LIMIT 1")
-        fila = cur.fetchone()
-        num = int(fila[0].split('-')[1]) if fila else 0
-        num += 1
-        nuevo_corr = f"EGTD-{num:02d}"
-        hoy = datetime.date.today().isoformat()
-        cur.execute(
-            "INSERT INTO estados_pago (correlativo, fecha, empresa, total_produccion, total_venta, total_gastos, neto) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (nuevo_corr, hoy, empresa_sel, total_prod, total_venta, total_gastos, neto)
-        )
-        cur.executemany(
-            "INSERT INTO estados_pago_detalle (correlativo, produccion_id) VALUES (?, ?)",
-            [(nuevo_corr, i) for i in st.session_state['seleccionadas']]
-        )
-        cur.executemany(
-            "INSERT INTO estados_pago_gastos (correlativo, gasto_id) VALUES (?, ?)",
-            [(nuevo_corr, i) for i in st.session_state['gastos_seleccionadas']]
-        )
-        conn.commit()
-        st.success(f"✅ Estado de Pago **{nuevo_corr}** guardado.")
+        corr_resp = supabase.table("estados_pago").select("correlativo").order("correlativo", desc=True).limit(1).execute().data
+        num = int(corr_resp[0]['correlativo'].split('-')[1]) if corr_resp else 0
+        nuevo_corr = f"EGTD-{num+1:02d}"
+        insertar_estado_pago(nuevo_corr, empresa_sel, total_prod, total_venta, total_gastos, neto)
+        st.success(f"✅ Estado de Pago **{nuevo_corr}** guardado en Supabase.")
+        # Reset session
         st.session_state['last_empresa'] = None
-        conn.close()
-        return
 
-    conn.close()
 
 if __name__ == "__main__":
     app()

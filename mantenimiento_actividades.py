@@ -32,6 +32,11 @@ def agregar_actividad(codigo: str,
         "valor_venta": valor_venta
     }).execute()
     st.success("✅ Actividad registrada.")
+    # Recarga la app
+    if hasattr(st, 'experimental_rerun'):
+        st.experimental_rerun()
+    elif hasattr(st, 'rerun'):
+        st.rerun()
 
 
 def actualizar_actividad(id_act: int,
@@ -52,12 +57,19 @@ def actualizar_actividad(id_act: int,
         "valor_venta": valor_venta
     }).eq("id", id_act).execute()
     st.success("✏️ Actividad actualizada.")
+    if hasattr(st, 'experimental_rerun'):
+        st.experimental_rerun()
+    elif hasattr(st, 'rerun'):
+        st.rerun()
 
 
 def eliminar_actividad(id_act: int):
     supabase.table("actividades").delete().eq("id", id_act).execute()
     st.success("🗑️ Actividad eliminada.")
-
+    if hasattr(st, 'experimental_rerun'):
+        st.experimental_rerun()
+    elif hasattr(st, 'rerun'):
+        st.rerun()
 
 # --- Interfaz de usuario ---
 
@@ -71,8 +83,20 @@ def app():
         unidad = st.text_input("Unidad", key="new_unidad")
         grupo = st.text_input("Grupo", key="new_grupo")
         tipo = st.selectbox("Tipo", ["Programada", "Extra Programática"], key="new_tipo")
-        valor_prod = st.number_input("Valor Producción", min_value=0.0, step=100.0, key="new_valor_prod")
-        valor_venta = st.number_input("Valor Venta", min_value=0.0, step=100.0, key="new_valor_venta")
+        valor_prod = st.number_input(
+            "Valor Producción",
+            min_value=0.0,
+            value=0.0,
+            step=100.0,
+            key="new_valor_prod"
+        )
+        valor_venta = st.number_input(
+            "Valor Venta",
+            min_value=0.0,
+            value=0.0,
+            step=100.0,
+            key="new_valor_venta"
+        )
         if st.button("Registrar", key="btn_agregar_act"):
             if codigo and descripcion:
                 agregar_actividad(codigo, descripcion, unidad, grupo, tipo, valor_prod, valor_venta)
@@ -97,11 +121,22 @@ def app():
                 index=0 if tipo_val == "Programada" else 1,
                 key=f"tipo_{act_id}"
             )
+            # Asegurar tipos float
+            default_prod = float(act.get("valor_produccion", 0.0))
+            default_venta = float(act.get("valor_venta", 0.0))
             valor_prod = st.number_input(
-                "Valor Producción", value=act.get("valor_produccion", 0.0), step=100.0, key=f"vp_{act_id}"
+                "Valor Producción",
+                min_value=0.0,
+                value=default_prod,
+                step=100.0,
+                key=f"vp_{act_id}"
             )
             valor_venta = st.number_input(
-                "Valor Venta", value=act.get("valor_venta", 0.0), step=100.0, key=f"vv_{act_id}"
+                "Valor Venta",
+                min_value=0.0,
+                value=default_venta,
+                step=100.0,
+                key=f"vv_{act_id}"
             )
             col1, col2 = st.columns(2)
             with col1:

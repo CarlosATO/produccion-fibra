@@ -5,303 +5,296 @@ from fpdf import FPDF
 from config import supabase
 
 # --- Funciones de acceso a datos en Supabase ---
+
 def leer_empresas():
-    resp = supabase.table("empresas").select("nombre").order("nombre").execute()
-    return [r["nombre"] for r in resp.data]
+    resp = (
+        supabase
+        .table("empresas")
+        .select("nombre")
+        .order("nombre")
+        .execute()
+    )
+    return [r["nombre"] for r in resp.data] if resp.data else []
 
 
 def leer_produccion(empresa_sel):
-    # Obtiene producción, personal y actividades
     prod = pd.DataFrame(
-        supabase.table("produccion").select("id, fecha, actividad, cantidad, trabajador").execute().data
+        supabase
+        .table("produccion")
+        .select("id, fecha, actividad, trabajador, cantidad")
+        .execute()
+        .data
     )
     perso = pd.DataFrame(
-        supabase.table("personal").select("nombre, empresa").execute().data
+        supabase
+        .table("personal")
+        .select("nombre, empresa")
+        .execute()
+        .data
     )
     acts = pd.DataFrame(
-        supabase.table("actividades").select("descripcion, valor_produccion, valor_venta").execute().data
+        supabase
+        .table("actividades")
+        .select("descripcion, valor_produccion, valor_venta")
+        .execute()
+        .data
     )
-    # Merge para agregar valores
+    if prod.empty or perso.empty or acts.empty:
+        return pd.DataFrame()
     df = prod.merge(perso, left_on="trabajador", right_on="nombre")
     df = df[df["empresa"] == empresa_sel]
     df = df.merge(acts, left_on="actividad", right_on="descripcion")
-    # Excluir ya pagados
-    pagos = supabase.table("estados_pago_detalle").select("produccion_id").execute().data
-    pagados = {r["produccion_id"] for r in pagos}
-    df = df[~df["id"].isin(pagados)]
-    # Cálculo de montos
+    used = {r["produccion_id"] for r in supabase.table(
+        "estados_pago_detalle").select("produccion_id").execute().data}
+    df = df[~df["id"].isin(used)]
     df["Monto Producción"] = df["cantidad"] * df["valor_produccion"]
-    df["Monto Venta"] = df["cantidad"] * df["valor_venta"]
-    return df
+    return df.reset_index(drop=True)
 
 
 def leer_gastos(empresa_sel):
-    g = pd.DataFrame(
-        supabase.table("gastos").select("id, fecha, detalle, monto, empresa").execute().data
+    df_g = pd.DataFrame(
+        supabase
+        .table("gastos")
+        .select("id, empresa, detalle, monto")
+        .execute()
+        .data
     )
-    df_g = g[g["empresa"] == empresa_sel].copy()
-    usados = supabase.table("estados_pago_gastos").select("gasto_id").execute().data
-    usados_ids = {r["gasto_id"] for r in usados}
-    df_g = df_g[~df_g["id"].isin(usados_ids)]
+    if df_g.empty:
+        return pd.DataFrame()
+    df_g = df_g[df_g["empresa"] == empresa_sel]
+    used = {r["gasto_id"] for r in supabase.table(
+        "estados_pago_gastos").select("gasto_id").execute().data}
+    df_g = df_g[~df_g["id"].isin(used)]
     df_g = df_g.rename(columns={"detalle": "descripcion"})
-    return df_g
+    return df_g.reset_index(drop=True)
 
+# --- Generación de PDF ---
 
-# --- Generación de PDF en memoria ---
-def generar_pdf_bytes(
-    correlativo: str,
-    empresa: str,
-    fecha: str,
-    df_prod: pd.DataFrame,
-    df_gast: pd.DataFrame,
-    total_prod: float,
-    total_venta: float,
-    total_gastos: float,
-    neto: float
-) -> bytes:
+def generar_pdf_bytes(corr, empresa, fecha, df_prod, df_g, tot_p, tot_g, neto):
     pdf = FPDF(orientation="P", unit="mm", format="A4")
-    pdf.set_auto_page_break(auto=True, margin=15)
     pdf.add_page()
+    pdf.set_auto_page_break(True, 15)
 
-    # Header
-    pdf.set_font("Helvetica", "B", 16)
-    pdf.cell(0, 10, f"ESTADO DE PAGO {correlativo}", ln=True, align="C")
+    # Título
+    pdf.set_font('Helvetica', 'B', 18)
+    pdf.cell(0, 10, f'Estado de Pago {corr}', ln=True, align='C')
     pdf.ln(5)
 
-    # Datos generales
-    pdf.set_font("Helvetica", "", 12)
-    pdf.cell(40, 8, "Empresa:")
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, empresa, ln=True)
-    pdf.set_font("Helvetica", "", 12)
-    pdf.cell(40, 8, "Fecha:")
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, fecha, ln=True)
+    # Empresa y Fecha
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.cell(100, 6, f'Empresa: {empresa}', ln=0)
+    pdf.cell(0, 6, f'Fecha: {fecha}', ln=1)
+    pdf.ln(3)
+
+        # Separador de texto
+    pdf.set_font('Helvetica', '', 12)
+    pdf.cell(0, 4, '-' * 100, ln=1)
     pdf.ln(5)
 
-    # Tabla de Producción
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(80, 8, "Actividad", border=1)
-    pdf.cell(30, 8, "Cantidad", border=1, align="R")
-    pdf.cell(40, 8, "Total Prod.", border=1, align="R")
-    pdf.cell(40, 8, "Total Venta", border=1, align="R")
-    pdf.ln()
-    pdf.set_font("Helvetica", "", 11)
-    for _, r in df_prod.iterrows():
-        pdf.cell(80, 7, r["actividad"], border=1)
-        pdf.cell(30, 7, str(int(r["cantidad"])), border=1, align="R")
-        pdf.cell(40, 7, f"$ {r['Monto Producción']:,.0f}", border=1, align="R")
-        pdf.cell(40, 7, f"$ {r['Monto Venta']:,.0f}", border=1, align="R")
-        pdf.ln()
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(150, 8, "Total Producción", border=1, align="R")
-    pdf.cell(40, 8, f"$ {total_prod:,.0f}", border=1, align="R")
-    pdf.ln(12)
-
-    # Tabla de Gastos
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(60, 8, "Fecha", border=1)
-    pdf.cell(85, 8, "Detalle", border=1)
-    pdf.cell(45, 8, "Monto", border=1, align="R")
-    pdf.ln()
-    pdf.set_font("Helvetica", "", 11)
-    for _, g in df_gast.iterrows():
-        pdf.cell(60, 7, g["fecha"], border=1)
-        pdf.cell(85, 7, g["descripcion"], border=1)
-        pdf.cell(45, 7, f"$ {g['monto']:,.0f}", border=1, align="R")
-        pdf.ln()
-    pdf.set_font("Helvetica", "B", 11)
-    pdf.cell(145, 8, "Total Gastos", border=1, align="R")
-    pdf.cell(45, 8, f"$ {total_gastos:,.0f}", border=1, align="R")
-    pdf.ln(12)
-
-    # Resumen
-    pdf.set_font("Helvetica", "B", 12)
-    pdf.cell(0, 8, "NETO A PAGAR", ln=True)
+    # Sección Producción
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.cell(0, 6, 'Producción', ln=1)
     pdf.ln(2)
-    pdf.set_font("Helvetica", "", 11)
-    pdf.cell(60, 6, "Monto Neto:")
-    pdf.cell(0, 6, f"$ {neto:,.0f}", ln=True)
+    pdf.set_font('Helvetica', '', 11)
+    for _, r in df_prod.iterrows():
+        pdf.multi_cell(0, 6, f"{r['actividad']}  |  Cant: {r['cantidad']}  |  Monto: ${r['Monto Producción']:,.0f}")
+    pdf.ln(2)
+        # Total Producción
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.cell(0, 6, f"Total Producción: ${tot_p:,.0f}", ln=1)
+    pdf.ln(5)
+    # Separador de texto
+    pdf.set_font('Helvetica', '', 12)
+    pdf.cell(0, 4, '-' * 100, ln=1)
+    pdf.ln(5)
+
+    # Sección Gastos
+    if not df_g.empty:
+        pdf.set_font('Helvetica', 'B', 12)
+        pdf.cell(0, 6, 'Gastos', ln=1)
+        pdf.ln(2)
+        pdf.set_font('Helvetica', '', 11)
+        for _, r in df_g.iterrows():
+            pdf.multi_cell(0, 6, f"{r['descripcion']}  |  Monto: ${r['monto']:,.0f}")
+        pdf.ln(2)
+                # Total Gastos
+        pdf.set_font('Helvetica', 'B', 12)
+        pdf.cell(0, 6, f"Total Gastos: ${tot_g:,.0f}", ln=1)
+        pdf.ln(5)
+        # Separador de texto
+        pdf.set_font('Helvetica', '', 12)
+        pdf.cell(0, 4, '-' * 100, ln=1)
+        pdf.ln(5)
+
+    # Neto a Pagar
+    pdf.set_font('Helvetica', 'B', 14)
+    pdf.cell(0, 8, f"Neto a Pagar: ${neto:,.0f}", ln=1)
     pdf.ln(10)
 
-    # Pie de página de autorización
-    pdf.set_draw_color(0, 0, 0)
-    pdf.set_line_width(0.4)
-    page_width = pdf.w - 2 * pdf.l_margin
-    pdf.line(pdf.l_margin, pdf.get_y(), pdf.l_margin + page_width, pdf.get_y())
-    pdf.ln(4)
-    pdf.set_font("Helvetica", "B", 10)
-    pdf.cell(0, 6, "SE AUTORIZA A FACTURAR A", ln=True)
+    # Bloque Autorización
+    pdf.set_font('Helvetica', 'B', 12)
+    pdf.cell(0, 6, 'SE AUTORIZA A FACTURAR A', ln=1)
     pdf.ln(2)
-    pdf.set_font("Helvetica", "", 10)
-    pdf.cell(0, 6, "SOMYL S.A.", ln=True)
-    pdf.cell(0, 6, "RUT: 76.002.581-K", ln=True)
-    pdf.multi_cell(0, 6, "Dirección: Puerta Oriente 361 Of. 311 B, Torre B, Colina")
+    pdf.set_font('Helvetica', '', 11)
+    pdf.cell(0, 6, 'SOMYL S.A. | RUT: 76.002.581-K', ln=1)
+    pdf.multi_cell(0, 6, 'Dirección: Puerta Oriente 361 Of. 311 B, Torre B, Colina')
     pdf.ln(2)
-    pdf.cell(30, 6, "AUTORIZA:")
-    pdf.cell(0, 6, "Luis Medina", ln=True)
-    pdf.cell(30, 6, "CORREO:")
-    pdf.cell(0, 6, "lmedina@somyl.com", ln=True)
+    pdf.cell(0, 6, 'AUTORIZA: Luis Medina', ln=1)
+    pdf.cell(0, 6, 'CORREO: lmedina@somyl.com', ln=1)
     pdf.ln(2)
-    pdf.cell(35, 6, "ENVIAR FACTURA A:")
-    pdf.multi_cell(0, 6, "cynthia.miranda@somyl.com; carlos.alegria@somyl.com")
+    pdf.multi_cell(0, 6, 'ENVIAR FACTURA A: cynthia.miranda@somyl.com; carlos.alegria@somyl.com')
 
-    return pdf.output(dest="S").encode("latin1")
+    return pdf.output(dest='S').encode('latin1')
 
+# --- Inserción en Supabase ---
 
-# --- Inserción de Estado de Pago en Supabase ---
-def insertar_estado_pago(nuevo_corr: str, empresa_sel: str,
-                          total_prod: float, total_venta: float,
-                          total_gastos: float, neto: float):
-    # Cabecera
-    supabase.table("estados_pago").insert({
-        "correlativo": nuevo_corr,
-        "fecha": datetime.date.today().isoformat(),
-        "empresa": empresa_sel,
-        "total_produccion": total_prod,
-        "total_venta": total_venta,
-        "total_gastos": total_gastos,
-        "neto": neto
+def insertar_estado_pago(corr, emp, tp, tg, neto):
+    supabase.table('estados_pago').insert({
+        'correlativo': corr,
+        'fecha': datetime.date.today().isoformat(),
+        'empresa': emp,
+        'total_produccion': float(tp),
+        'total_gastos': float(tg),
+        'neto': float(neto)
     }).execute()
-    # Detalle producción
-    supabase.table("estados_pago_detalle").insert([
-        {"correlativo": nuevo_corr, "produccion_id": i}
-        for i in st.session_state['seleccionadas']
+    supabase.table('estados_pago_detalle').insert([
+        {'correlativo': corr, 'produccion_id': int(i)}
+        for i in st.session_state['prod_sel']['id']
     ]).execute()
-    # Detalle gastos
-    supabase.table("estados_pago_gastos").insert([
-        {"correlativo": nuevo_corr, "gasto_id": i}
-        for i in st.session_state['gastos_seleccionadas']
+    supabase.table('estados_pago_gastos').insert([
+        {'correlativo': corr, 'gasto_id': int(i)}
+        for i in st.session_state['gast_sel']['id']
     ]).execute()
 
+# --- UI principal ---
 
-# --- Función principal de Streamlit ---
 def app():
     st.subheader("🧾 Creación de Estado de Pago")
 
-    # 1) Lista de empresas
-    empresas = leer_empresas()
-    if not empresas:
-        st.warning("⚠️ No hay empresas registradas en Supabase.")
-        return
-    empresa_sel = st.selectbox("Selecciona Subcontrato", empresas)
+    # Callback para reset
+    def reset_on_change():
+        for k in ['prod_disp', 'prod_sel', 'gast_disp', 'gast_sel']:
+            st.session_state.pop(k, None)
 
-    # 2) Datos de producción y gastos
+    empresa_sel = st.selectbox(
+        "Selecciona Subcontrato", leer_empresas(),
+        key='empresa_sel', on_change=reset_on_change
+    )
+
     df_prod = leer_produccion(empresa_sel)
     df_g = leer_gastos(empresa_sel)
     if df_prod.empty and df_g.empty:
-        st.info("No hay datos disponibles.")
+        st.info("No hay datos para este subcontrato.")
         return
 
-    # Cálculo montos y setup de session_state
-    total_prod = df_prod['Monto Producción'].sum()
-    total_venta = df_prod['Monto Venta'].sum()
-    total_gastos = df_g['monto'].sum()
-    neto = total_prod - total_gastos
+    # Initialize session state tables
+    for key, df in [('prod_disp', df_prod), ('prod_sel', df_prod.iloc[0:0]),
+                    ('gast_disp', df_g), ('gast_sel', df_g.iloc[0:0])]:
+        if key not in st.session_state:
+            st.session_state[key] = df.copy()
 
-    if ('disponibles' not in st.session_state
-            or st.session_state.get('last_empresa') != empresa_sel):
-        st.session_state['last_empresa'] = empresa_sel
-        st.session_state['disponibles'] = df_prod['id'].tolist()
-        st.session_state['seleccionadas'] = []
-        st.session_state['gastos_disponibles'] = df_g['id'].tolist()
-        st.session_state['gastos_seleccionadas'] = []
-
-    # 3) Dual-listbox Producción
-    row_map = {r['id']: r for _, r in df_prod.iterrows()}
-    c1, c2 = st.columns(2)
-    with c1:
-        sel_disp = st.multiselect(
-            "Líneas disponibles", st.session_state['disponibles'],
-            format_func=lambda i: f"{row_map[i]['fecha']} | {row_map[i]['actividad']} | QTY:{int(row_map[i]['cantidad'])} | Prod:${row_map[i]['Monto Producción']:,.0f} | Venta:${row_map[i]['Monto Venta']:,.0f}",
-            key='d1'
+    # Producción section
+    st.markdown("### Producción")
+    col1, col2 = st.columns(2)
+    with col1:
+        st.write("**Disponibles**")
+        st.dataframe(st.session_state['prod_disp'], use_container_width=True)
+        sel_add = st.multiselect(
+            'IDs a añadir', st.session_state['prod_disp']['id'].tolist(),
+            key='prod_ids_add'
         )
-        if st.button('>> Añadir', key='a1'):
-            for i in sel_disp:
-                st.session_state['disponibles'].remove(i)
-                st.session_state['seleccionadas'].append(i)
-    with c2:
-        sel_sel = st.multiselect(
-            "Líneas seleccionadas", st.session_state['seleccionadas'],
-            format_func=lambda i: f"{row_map[i]['fecha']} | {row_map[i]['actividad']} | QTY:{int(row_map[i]['cantidad'])} | Prod:${row_map[i]['Monto Producción']:,.0f} | Venta:${row_map[i]['Monto Venta']:,.0f}",
-            key='s1'
+        if st.button('>> Añadir Producción'):
+            to_add = st.session_state['prod_disp'][
+                st.session_state['prod_disp']['id'].isin(sel_add)
+            ]
+            st.session_state['prod_sel'] = pd.concat([
+                st.session_state['prod_sel'], to_add
+            ]).reset_index(drop=True)
+            st.session_state['prod_disp'] = st.session_state['prod_disp'][
+                ~st.session_state['prod_disp']['id'].isin(sel_add)
+            ].reset_index(drop=True)
+    with col2:
+        st.write("**Seleccionadas**")
+        st.dataframe(st.session_state['prod_sel'], use_container_width=True)
+        sel_rem = st.multiselect(
+            'IDs a quitar', st.session_state['prod_sel']['id'].tolist(),
+            key='prod_ids_rem'
         )
-        if st.button('<< Quitar', key='q1'):
-            for i in sel_sel:
-                st.session_state['seleccionadas'].remove(i)
-                st.session_state['disponibles'].append(i)
+        if st.button('<< Quitar Producción'):
+            back = st.session_state['prod_sel'][
+                st.session_state['prod_sel']['id'].isin(sel_rem)
+            ]
+            st.session_state['prod_disp'] = pd.concat([
+                st.session_state['prod_disp'], back
+            ]).reset_index(drop=True)
+            st.session_state['prod_sel'] = st.session_state['prod_sel'][
+                ~st.session_state['prod_sel']['id'].isin(sel_rem)
+            ].reset_index(drop=True)
 
-    # 4) Dual-listbox Gastos
+    # Gastos section
+    st.markdown("### Gastos")
+    g1, g2 = st.columns(2)
+    with g1:
+        st.write("**Disponibles**")
+        st.dataframe(st.session_state['gast_disp'], use_container_width=True)
+        sel_addg = st.multiselect(
+            'IDs gasto añadir', st.session_state['gast_disp']['id'].tolist(),
+            key='gast_ids_add'
+        )
+        if st.button('>> Añadir Gasto'):
+            addg = st.session_state['gast_disp'][
+                st.session_state['gast_disp']['id'].isin(sel_addg)
+            ]
+            st.session_state['gast_sel'] = pd.concat([
+                st.session_state['gast_sel'], addg
+            ]).reset_index(drop=True)
+            st.session_state['gast_disp'] = st.session_state['gast_disp'][
+                ~st.session_state['gast_disp']['id'].isin(sel_addg)
+            ].reset_index(drop=True)
+    with g2:
+        st.write("**Seleccionados**")
+        st.dataframe(st.session_state['gast_sel'], use_container_width=True)
+        sel_remg = st.multiselect(
+            'IDs gasto quitar', st.session_state['gast_sel']['id'].tolist(),
+            key='gast_ids_rem'
+        )
+        if st.button('<< Quitar Gasto'):
+            backg = st.session_state['gast_sel'][
+                st.session_state['gast_sel']['id'].isin(sel_remg)
+            ]
+            st.session_state['gast_disp'] = pd.concat([
+                st.session_state['gast_disp'], backg
+            ]).reset_index(drop=True)
+            st.session_state['gast_sel'] = st.session_state['gast_sel'][
+                ~st.session_state['gast_sel']['id'].isin(sel_remg)
+            ].reset_index(drop=True)
+
+    # Totales
+    df_s = st.session_state['prod_sel']
+    df_gs = st.session_state['gast_sel']
+    tp = (df_s['cantidad'] * df_s['valor_produccion']).sum()
+    tg = df_gs['monto'].sum()
+    neto = tp - tg
     st.markdown("---")
-    st.subheader("💸 Gastos a descontar")
-    row_g_map = {g['id']: g for _, g in df_g.iterrows()}
-    c3, c4 = st.columns(2)
-    with c3:
-        sel_g_disp = st.multiselect(
-            "Gastos disponibles", st.session_state['gastos_disponibles'],
-            format_func=lambda i: f"{row_g_map[i]['fecha']} | {row_g_map[i]['descripcion']} | Monto:${row_g_map[i]['monto']:,.0f}",
-            key='gd1'
-        )
-        if st.button('>> Añadir Gasto', key='ag1'):
-            for i in sel_g_disp:
-                st.session_state['gastos_disponibles'].remove(i)
-                st.session_state['gastos_seleccionadas'].append(i)
-    with c4:
-        sel_g_sel = st.multiselect(
-            "Gastos seleccionados", st.session_state['gastos_seleccionadas'],
-            format_func=lambda i: f"{row_g_map[i]['fecha']} | {row_g_map[i]['descripcion']} | Monto:${row_g_map[i]['monto']:,.0f}",
-            key='gs1'
-        )
-        if st.button('<< Quitar Gasto', key='qg1'):
-            for i in sel_g_sel:
-                st.session_state['gastos_seleccionadas'].remove(i)
-                st.session_state['gastos_disponibles'].append(i)
+    ctp, ctg, cneto = st.columns(3)
+    ctp.metric('PRODUCCIÓN', f"${tp:,.0f}")
+    ctg.metric('GASTOS', f"${tg:,.0f}")
+    cneto.metric('NETO', f"${neto:,.0f}")
 
-    # 5) Mostrar métricas y detalle Gastos
+    # PDF y Guardar
     st.markdown("---")
-    col_tot, col_det = st.columns([1, 1])
-    with col_tot:
-        st.metric("Total Producción", f"$ {total_prod:,.0f}")
-        st.metric("Total Venta", f"$ {total_venta:,.0f}")
-        st.metric("Total Gastos", f"$ {total_gastos:,.0f}")
-        st.metric("Neto", f"$ {neto:,.0f}")
-    with col_det:
-        st.markdown("### Detalle Gastos")
-        detalle = df_g[['fecha', 'descripcion', 'monto']].rename(
-            columns={'fecha': 'Fecha', 'descripcion': 'Detalle', 'monto': 'Monto'}
-        )
-        st.dataframe(detalle, use_container_width=True, hide_index=True)
+    pbtn, gbtn = st.columns(2)
+    with pbtn:
+        if st.button('📄 Previsualizar PDF'):
+            count = len(supabase.table('estados_pago').select('correlativo').execute().data)
+            corr = f"EGTD-{count+1:02d}"
+            fecha = datetime.date.today().isoformat()
+            pdf = generar_pdf_bytes(corr, empresa_sel, fecha, df_s, df_gs, tp, tg, neto)
+            st.download_button('Descargar Preview', pdf, f'preview_{corr}.pdf', 'application/pdf')
+    with gbtn:
+        if st.button('💾 Guardar Estado'):
+            insertar_estado_pago(corr, empresa_sel, tp, tg, neto)
+            st.success(f'✅ Estado {corr} guardado')
 
-    # 6) Previsualizar PDF
-    if st.button('📄 Previsualizar PDF', key='pv'):
-        # Obtener siguiente correlativo
-        corr_resp = supabase.table("estados_pago").select("correlativo").order("correlativo", desc=True).limit(1).execute().data
-        num = int(corr_resp[0]['correlativo'].split('-')[1]) if corr_resp else 0
-        temp_corr = f"EGTD-{num+1:02d}"
-        hoy = datetime.date.today().isoformat()
-        pdf_bytes = generar_pdf_bytes(
-            temp_corr, empresa_sel, hoy,
-            df_prod[df_prod['id'].isin(st.session_state['seleccionadas'])],
-            df_g[df_g['id'].isin(st.session_state['gastos_seleccionadas'])],
-            total_prod, total_venta, total_gastos, neto
-        )
-        st.download_button(
-            label="Descargar Previsualización PDF",
-            data=pdf_bytes,
-            file_name=f"{temp_corr}_preview.pdf",
-            mime="application/pdf"
-        )
-
-    # 7) Guardar Estado de Pago
-    if st.button('💾 Guardar Estado de Pago', key='sv'):
-        corr_resp = supabase.table("estados_pago").select("correlativo").order("correlativo", desc=True).limit(1).execute().data
-        num = int(corr_resp[0]['correlativo'].split('-')[1]) if corr_resp else 0
-        nuevo_corr = f"EGTD-{num+1:02d}"
-        insertar_estado_pago(nuevo_corr, empresa_sel, total_prod, total_venta, total_gastos, neto)
-        st.success(f"✅ Estado de Pago **{nuevo_corr}** guardado en Supabase.")
-        # Reset session
-        st.session_state['last_empresa'] = None
-
-
-if __name__ == "__main__":
+if __name__ == '__main__':
     app()

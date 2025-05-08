@@ -1,97 +1,97 @@
 import streamlit as st
-import sqlite3
 import hashlib
-from supabase import create_client, Client
-
 from config import supabase
 
+import mantenimiento_usuarios
+# (los demás módulos que cargas abajo)
 
+# --- Funciones de autenticación con Supabase ---
 
-# Función para obtener conexión a la base de datos
-def get_connection():
-    return sqlite3.connect("productividad_fibra.db", check_same_thread=False)
-
-# Función para encriptar contraseñas
-def hash_password(password):
+def hash_password(password: str) -> str:
+    """SHA-256 de la contraseña."""
     return hashlib.sha256(password.encode()).hexdigest()
 
-# Verificar si el usuario existe
-def verificar_usuario(usuario, contrasena):
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT contrasena, rol FROM usuarios WHERE usuario = ?", (usuario,))
-    resultado = cursor.fetchone()
-    conn.close()
+def verificar_usuario(usuario: str, contrasena: str) -> str | None:
+    """
+    Comprueba en Supabase que el usuario exista y la contraseña hashee coincida.
+    Devuelve el rol si OK, o None si falla o no hay filas.
+    """
+    hashed = hash_password(contrasena)
+    try:
+        resp = (
+            supabase
+            .table("usuarios")
+            .select("usuario, password, rol")
+            .eq("usuario", usuario)
+            .maybe_single()
+            .execute()
+        )
+    except Exception:
+        # Si la consulta lanza cualquier excepción, tratamos como fallo de login
+        return None
 
-    if resultado and hash_password(contrasena) == resultado[0]:
-        return resultado[1]  # Retorna el rol
-    return None
+    # Si resp es None o no viene el atributo data, o data es None → fallo
+    if resp is None or not hasattr(resp, "data") or resp.data is None:
+        return None
 
-# Insertar usuario admin si no existe
-def insertar_usuario_admin():
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM usuarios WHERE usuario = 'admin'")
-    if not cursor.fetchone():
-        cursor.execute("""
-            INSERT INTO usuarios (usuario, contrasena, rol)
-            VALUES (?, ?, ?)
-        """, ("admin", hash_password("admin123"), "admin"))
-        conn.commit()
-    conn.close()
+    fila = resp.data
+    # Aseguramos que fila sea un dict (y no lista u otro tipo)
+    if not isinstance(fila, dict):
+        return None
 
-# Llamar al insertar admin al iniciar
-insertar_usuario_admin()
+    # Finalmente comparamos el hash
+    return fila["rol"] if fila.get("password") == hashed else None
 
-# Configuración de página
-st.set_page_config(page_title="Producción de Fibra Óptica", layout="wide")
-
-# Función para interfaz de login
 def mostrar_login():
-    st.markdown("## 🔐 Inicio de Sesión")
-    usuario = st.text_input("Usuario")
-    contrasena = st.text_input("Contraseña", type="password")
-    if st.button("Iniciar sesión"):
-        rol = verificar_usuario(usuario, contrasena)
-        if rol:
-            st.session_state["autenticado"] = True
-            st.session_state["usuario"] = usuario
-            st.session_state["rol"] = rol
-            st.rerun()
-        else:
-            st.error("❌ Usuario o contraseña incorrectos")
+    """Pantalla de login con inputs más cortos y centrados."""
+    st.markdown("## 🔐 Inicio de Sesión Produccion Proyecto GTD")
+    # Creamos tres columnas; la central tendrá el 50% del ancho
+    col1, col2, col3 = st.columns([1,1,2])
 
-# Función para cargar secciones según opción
+    with col1:
+        usuario = st.text_input("Usuario")
+        contrasena = st.text_input("Contraseña", type="password")
+        if st.button("Iniciar sesión"):
+            if not usuario or not contrasena:
+                st.warning("⚠️ Ingresa usuario y contraseña.")
+            else:
+                rol = verificar_usuario(usuario.strip(), contrasena)
+                if rol:
+                    st.session_state["autenticado"] = True
+                    st.session_state["usuario"] = usuario.strip()
+                    st.session_state["rol"] = rol
+                    st.rerun()
+                else:
+                    st.error("❌ Usuario o contraseña incorrectos")
+
+
+# --- Función para cargar secciones ---
+
 def cargar_seccion(nombre):
     if nombre == "Resumen de Producción":
-        import resumen_produccion
-        resumen_produccion.app()
+        import resumen_produccion; resumen_produccion.app()
     elif nombre == "Ingreso de Producción":
-        import ingreso_produccion
-        ingreso_produccion.app()
+        import ingreso_produccion; ingreso_produccion.app()
     elif nombre == "Mantenimiento de Actividades":
-        import mantenimiento_actividades
-        mantenimiento_actividades.app()
+        import mantenimiento_actividades; mantenimiento_actividades.app()
     elif nombre == "Mantenimiento de Personal":
-        import mantenimiento_personal
-        mantenimiento_personal.app()
+        import mantenimiento_personal; mantenimiento_personal.app()
     elif nombre == "Mantenimiento de Tramos":
-        import mantenimiento_tramos
-        mantenimiento_tramos.app()
+        import mantenimiento_tramos; mantenimiento_tramos.app()
     elif nombre == "Mantenimiento de Usuarios":
-        import mantenimiento_usuarios
         mantenimiento_usuarios.app()
     elif nombre == "Mantenimiento de Empresas":
-        import mantenimiento_empresas
-        mantenimiento_empresas.app()
+        import mantenimiento_empresas; mantenimiento_empresas.app()
     elif nombre == "Registro de Gastos":
-        import registro_gastos
-        registro_gastos.app()
+        import registro_gastos; registro_gastos.app()
     elif nombre == "Creación de Estado de Pago":
-        import creacion_estado_pago
-        creacion_estado_pago.app()
+        import creacion_estado_pago; creacion_estado_pago.app()
 
-# App principal
+
+# --- Inicio de la app ---
+
+st.set_page_config(page_title="Producción de Fibra Óptica", layout="wide")
+
 if "autenticado" not in st.session_state:
     st.session_state["autenticado"] = False
 

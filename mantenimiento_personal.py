@@ -21,7 +21,6 @@ def listar_empresas():
 
 
 def listar_personal():
-    """Devuelve lista de dicts con todo el personal."""
     resp = (
         supabase.table("personal")
         .select("id, nombre, rut, cargo, empresa")
@@ -30,6 +29,7 @@ def listar_personal():
     )
     return resp.data or []
 
+# --- CRUD de personal ---
 
 def agregar_personal(nombre: str, rut: str, cargo: str, empresa: str):
     supabase.table("personal").insert({
@@ -39,6 +39,11 @@ def agregar_personal(nombre: str, rut: str, cargo: str, empresa: str):
         "empresa": empresa
     }).execute()
     st.success("✅ Personal registrado.")
+    # Recarga la app
+    if hasattr(st, 'experimental_rerun'):
+        st.experimental_rerun()
+    elif hasattr(st, 'rerun'):
+        st.rerun()
 
 
 def actualizar_personal(id_pers: int, nombre: str, rut: str, cargo: str, empresa: str):
@@ -49,23 +54,31 @@ def actualizar_personal(id_pers: int, nombre: str, rut: str, cargo: str, empresa
         "empresa": empresa
     }).eq("id", id_pers).execute()
     st.success("✏️ Personal actualizado.")
+    if hasattr(st, 'experimental_rerun'):
+        st.experimental_rerun()
+    elif hasattr(st, 'rerun'):
+        st.rerun()
 
 
 def eliminar_personal(id_pers: int):
     supabase.table("personal").delete().eq("id", id_pers).execute()
     st.success("🗑️ Personal eliminado.")
+    if hasattr(st, 'experimental_rerun'):
+        st.experimental_rerun()
+    elif hasattr(st, 'rerun'):
+        st.rerun()
 
 # --- Interfaz de usuario ---
+
 def app():
     st.subheader("👷 Mantenimiento de Personal")
 
-    # Carga empresas
     empresas = listar_empresas()
     if not empresas:
         st.warning("⚠️ Debes registrar empresas antes de ingresar personal.")
         return
 
-    # Formulario de registro
+    # Agregar nuevo trabajador
     with st.expander("➕ Agregar nuevo trabajador"):
         nombre = st.text_input("Nombre", key="new_nombre")
         rut = st.text_input("RUT (ej: 12345678-9)", key="new_rut")
@@ -78,7 +91,6 @@ def app():
                 st.error("❌ Formato de RUT incorrecto.")
             else:
                 agregar_personal(nombre, rut, cargo, empresa_sel)
-                st.experimental_rerun()
 
     st.markdown("---")
     st.subheader("📋 Personal registrado")
@@ -104,11 +116,9 @@ def app():
                         st.error("❌ Formato de RUT incorrecto. No se puede actualizar.")
                     else:
                         actualizar_personal(id_pers, nombre, rut, cargo, empresa_sel)
-                        st.experimental_rerun()
             with col2:
                 if st.button("Eliminar", key=f"del_{id_pers}"):
                     eliminar_personal(id_pers)
-                    st.experimental_rerun()
 
 if __name__ == "__main__":
     app()

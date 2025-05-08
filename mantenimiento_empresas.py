@@ -23,9 +23,7 @@ def validar_rut(rut: str) -> bool:
     return dv_ingresado == dv_calculado
 
 # --- Funciones de acceso a datos ---
-
 def listar_empresas():
-    """Devuelve todas las empresas registradas."""
     resp = (
         supabase
         .table('empresas')
@@ -35,9 +33,7 @@ def listar_empresas():
     )
     return resp.data or []
 
-
 def agregar_empresa(nombre: str, rut: str, representante: str, direccion: str, correo: str):
-    """Inserta una nueva empresa en Supabase."""
     supabase.table('empresas').insert({
         'nombre': nombre.upper(),
         'rut': rut.upper(),
@@ -46,12 +42,6 @@ def agregar_empresa(nombre: str, rut: str, representante: str, direccion: str, c
         'correo': correo
     }).execute()
     st.success('✅ Empresa registrada correctamente.')
-
-
-def eliminar_empresa(id_emp: int):
-    """Elimina la empresa especificada por ID."""
-    supabase.table('empresas').delete().eq('id', id_emp).execute()
-    st.success('🗑️ Empresa eliminada.')
 
 # --- Interfaz de usuario ---
 def app():
@@ -73,7 +63,9 @@ def app():
             else:
                 try:
                     agregar_empresa(nombre, rut, representante, direccion, correo)
-                    st.experimental_rerun()
+                    # Recargar la app para actualizar la lista
+                    if hasattr(st, 'rerun'):
+                        st.rerun()
                 except Exception as e:
                     st.error(f'⚠️ Error al registrar empresa: {e}')
 
@@ -89,8 +81,13 @@ def app():
                 st.write(f"**Dirección:** {emp['direccion']}")
                 st.write(f"**Correo:** {emp['correo']}")
                 if st.button('Eliminar', key=f"del_{emp['id']}"):
-                    eliminar_empresa(emp['id'])
-                    st.experimental_rerun()
+                    try:
+                        supabase.table('empresas').delete().eq('id', emp['id']).execute()
+                        st.success('🗑️ Empresa eliminada.')
+                        if hasattr(st, 'rerun'):
+                            st.rerun()
+                    except Exception as e:
+                        st.error(f'⚠️ Error al eliminar empresa: {e}')
     else:
         st.info('No hay empresas registradas.')
 

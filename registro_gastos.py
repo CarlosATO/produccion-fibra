@@ -28,18 +28,24 @@ def agregar_gasto(empresa: str, detalle: str, monto: float, observacion: str):
         "observacion": observacion.strip(),
         "fecha": date.today().isoformat()
     }).execute()
-    st.success("✅ Gasto registrado exitosamente.")
-    st.experimental_rerun()
+    st.success("✅ Gasto registrado correctamente.")
+    # Recarga la app sin usar key
+    if hasattr(st, 'experimental_rerun'):
+        st.experimental_rerun()
+    elif hasattr(st, 'rerun'):
+        st.rerun()
 
 
 def eliminar_gasto(id_gasto: int):
     """Elimina un gasto por ID"""
     supabase.table("gastos").delete().eq("id", id_gasto).execute()
     st.success("🗑️ Gasto eliminado.")
-    st.experimental_rerun()
+    if hasattr(st, 'experimental_rerun'):
+        st.experimental_rerun()
+    elif hasattr(st, 'rerun'):
+        st.rerun()
 
 # --- Interfaz de usuario ---
-
 def app():
     st.subheader("💸 Registro de Gastos por Empresa")
 
@@ -48,28 +54,28 @@ def app():
         st.warning("⚠️ Debes registrar empresas antes de ingresar gastos.")
         return
 
-    # Formulario de registro
     with st.form("form_gasto"):
-        empresa = st.selectbox("Empresa (Subcontrato)", empresas, key="empresa")
-        detalle = st.text_area("Detalle del gasto", key="detalle")
-        monto = st.number_input("Monto ($)", min_value=0.0, step=100.0, key="monto")
-        observacion = st.text_input("Observación", key="observacion")
-        if st.form_submit_button("Registrar Gasto", key="btn_guardar"):
+        empresa = st.selectbox("Empresa (Subcontrato)", empresas)
+        detalle = st.text_area("Detalle del gasto").strip()
+        monto = st.number_input("Monto del gasto", min_value=0.0, step=100.0)
+        observacion = st.text_input("Observación").strip()
+        submitted = st.form_submit_button("Registrar Gasto")
+        if submitted:
             if not detalle:
-                st.warning("⚠️ Completa el detalle del gasto.")
+                st.warning("⚠️ El campo 'Detalle del gasto' es obligatorio.")
             elif monto <= 0:
                 st.warning("⚠️ El monto debe ser mayor que 0.")
             else:
                 agregar_gasto(empresa, detalle, monto, observacion)
 
-    st.divider()
-    st.subheader("📋 Gastos registrados")
+    st.markdown("---")
+    st.subheader("📋 Gastos Registrados")
 
     gastos = listar_gastos()
     if gastos:
         for g in gastos:
-            with st.expander(f"{g['empresa']} - ${g['monto']:.0f} - {g['fecha']}"):
-                st.write(f"**Detalle:** {g['detalle']}")
+            with st.expander(f"{g['empresa']} - {g['detalle']} - ${g['monto']:.0f}"):
+                st.write(f"**Fecha:** {g['fecha']}")
                 st.write(f"**Observación:** {g['observacion']}")
                 if st.button("Eliminar", key=f"del_{g['id']}"):
                     eliminar_gasto(g['id'])
